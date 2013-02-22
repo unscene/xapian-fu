@@ -8,6 +8,7 @@ module XapianFu #:nodoc:
   require 'query_parser'
   require 'result_set'
   require 'xapian_documents_accessor'
+  require 'xapian_array_match_spy'
   require 'thread'
 
   # Raised when two operations are attempted concurrently when it is
@@ -275,7 +276,11 @@ module XapianFu #:nodoc:
       end
       if options[:facets]
         spies = options[:facets].inject({}) do |accum, name|
-          accum[name] = spy = Xapian::ValueCountMatchSpy.new(XapianDocValueAccessor.value_key(name))
+          value_accesor = XapianDocValueAccessor.value_key(name)
+          field = @fields[name.to_sym]
+          puts field
+          accum[name] = spy = XapianFu::ArrayCountMatchSpy.new(value_accesor) if field and field == Array            
+          accum[name] ||= spy ||= Xapian::ValueCountMatchSpy.new(value_accesor)
           enquiry.add_matchspy(spy)
           accum
         end
@@ -287,6 +292,7 @@ module XapianFu #:nodoc:
 
       enquiry.query = query
 
+      
       ResultSet.new(:mset => enquiry.mset(offset, per_page, check_at_least),
                     :current_page => page + 1,
                     :per_page => per_page,

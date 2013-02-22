@@ -12,7 +12,8 @@ describe "Facets support" do
       :fields => {
         :name      => { :index => true },
         :age       => { :type => Integer, :sortable => true },
-        :height    => { :type => Float, :sortable => true }
+        :height    => { :type => Float, :sortable => true },
+        :colors    => { :type => Array, :store => true }
       }
     )
 
@@ -45,11 +46,29 @@ describe "Facets support" do
     @xdb.flush
 
     results = @xdb.search("john", :facets => [:age, :height], :check_at_least => :all)
-
+    
     results.facets[:age].map(&:last).inject(0) { |t,i| t + i }.should == 404
 
     results = @xdb.search(:all, :facets => [:age, :height], :check_at_least => :all)
 
     results.facets[:age].map(&:last).inject(0) { |t,i| t + i }.should == 505
+  end
+
+  it "should allow boolean filters to be counted when faceting" do
+    @xdb << {name: "Foo", colors: ["red", "black"], :age => 30, :height => 1.8}
+    @xdb << {name: "Foo", colors: ["red", "green"], :age => 30, :height => 1.8}
+    @xdb << {name: "Foo", colors: ["blue", "yellow"], :age => 30, :height => 1.8}
+
+    @xdb.flush
+
+    results = @xdb.search("Foo", :facets => [:colors], :check_at_least => :all)    
+    facets = results.facets[:colors].flatten
+    facets_hash = Hash[*facets]
+    
+    facets_hash['red'].should == 2
+    facets_hash['black'].should == 1
+    facets_hash['green'].should == 1
+    facets_hash['blue'].should == 1
+    facets_hash['yellow'].should == 1
   end
 end

@@ -81,6 +81,7 @@ class Hash #:nodoc:
 
   def self.from_xapian_fu_storage_value(value)
     YAML::load(value) rescue nil
+  end 
 end
 
 class Object
