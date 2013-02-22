@@ -49,15 +49,15 @@ module XapianFu #:nodoc:
   # or false.
   #
   class QueryParser #:notnew:
-    
+
     # The stemming strategy to use when generating terms from a query.
     # Defaults to <tt>:some</tt>
     attr_accessor :stemming_strategy
-    
+
     # The default operation when combining search terms.  Defaults to
     # <tt>:and</tt>
     attr_accessor :default_op
-    
+
     # The database that this query is agains, used for setting up
     # fields, stemming, stopping and spelling.
     attr_accessor :database
@@ -72,9 +72,17 @@ module XapianFu #:nodoc:
       self.database = @options[:database]
     end
 
-    # Parse the given query string and return a Xapian::Query object
+    # Parse the given query and return a Xapian::Query object
+    # Accepts either a string or a special query
     def parse_query(q)
-      query_parser.parse_query(q, xapian_flags)
+      case q
+      when :all
+        Xapian::Query.new("")
+      when :nothing
+        Xapian::Query.new()
+      else
+        query_parser.parse_query(q, xapian_flags)
+      end
     end
 
     # Return the query string with any spelling corrections made
@@ -93,9 +101,34 @@ module XapianFu #:nodoc:
         qp.stemmer = database.stemmer if database
         qp.default_op = xapian_default_op
         qp.stemming_strategy = xapian_stemming_strategy
+
         fields.each do |name, type|
+          next if database && database.boolean_fields.include?(name)
           qp.add_prefix(name.to_s.downcase, "X" + name.to_s.upcase)
         end
+
+        database.boolean_fields.each do |name|
+          qp.add_boolean_prefix(name.to_s.downcase, "X#{name.to_s.upcase}")
+        end if database
+
+        database.sortable_fields.each do |field, opts|
+          prefix, string = nil
+
+          if opts[:range_postfix]
+            prefix = false
+            string = opts[:range_postfix]
+          else
+            prefix = true
+            string = opts[:range_prefix] || "#{field.to_s.downcase}:"
+          end
+
+          qp.add_valuerangeprocessor(Xapian::NumberValueRangeProcessor.new(
+            XapianDocValueAccessor.value_key(field),
+            string,
+            prefix
+          ))
+        end if database
+
         @query_parser = qp
       end
     end

@@ -1,3 +1,38 @@
+=== 1.5.1 (unreleased)
+
+* Add ability to pass a `PostingSource` when searching.
+
+* Add ability to specify how many documents to sample when searching.
+
+  This allows for accurate paging links, facet counts, etc.
+
+* Support a `:weight` option when declaring database fields.
+
+=== 1.5.0 (23rd May 2012)
+
+* Support for custom term weights when indexing (Mike Ragalie)
+
+=== 1.4.0 (13th March 2012)
+
+* Support for indexing Arrays properly
+
+* Support returning all and no documents by using Xapian's special
+  queries `MatchAll` and `MatchNothing`.
+
+* Add boolean terms and faceted queries.
+
+  See [http://bit.ly/rMuA4M](http://bit.ly/rMuA4M).
+
+* Fix number range queries when no prefixes are given.
+
+=== 1.3.2 (4th December 2011)
+
+* Number range queries (Damian Janowski)
+
+=== 1.3.1 (12th October 2011)
+
+* Fix casting of values on search. (Damian Janowski)
+
 === 1.3 (7th July 2011)
 
 * Support for phrase searching

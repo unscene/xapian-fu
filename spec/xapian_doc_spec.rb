@@ -6,8 +6,16 @@ require 'fileutils'
 
 describe XapianDoc do
 
-  it "should be equal to other XapianDoc objects with the same id" do
-    XapianDoc.new(:id => 666).should == XapianDoc.new(:id => 666)
+  it "should be equal to other XapianDoc objects with the same id belonging to the same database" do
+    xdb1 = XapianDb.new(:dir => "/tmp/foos")
+    xdb2 = XapianDb.new(:dir => "/tmp/foos")
+
+    XapianDoc.new({:id => 666}, :xapian_db => xdb1).should == XapianDoc.new({:id => 666}, :xapian_db => xdb1)
+    XapianDoc.new({:id => 666}, :xapian_db => xdb1).should == XapianDoc.new({:id => 666}, :xapian_db => xdb2)
+
+    xdb3 = XapianDb.new(:dir => "/tmp/bars")
+
+    XapianDoc.new({:id => 666}, :xapian_db => xdb1).should_not == XapianDoc.new({:id => 666}, :xapian_db => xdb3)
   end
 
   it "should not be equal to other XapianDoc objects with different ids" do
@@ -35,6 +43,30 @@ describe XapianDoc do
       doc = xdb.documents.new("once upon a time")
       doc.save
       xdb.ro.positionlist(doc.id, "once").first.should == nil
+    end
+
+    it "should tokenize an array given as a field" do
+      xdb = XapianDb.new
+      xdoc = xdb.documents.new(:colors => [:red, :green, :blue]).to_xapian_document
+      xdoc.terms.should be_a_kind_of Array
+      xdoc.terms.last.should be_a_kind_of Xapian::Term
+      terms = xdoc.terms.collect { |t| t.term }
+      terms.should include "red"
+      terms.should include "green"
+      terms.should include "blue"
+      terms.should_not include "redgreenblue"
+    end
+
+    it "should tokenize an array given as the content" do
+      xdb = XapianDb.new
+      xdoc = xdb.documents.new([:red, :green, :blue]).to_xapian_document
+      xdoc.terms.should be_a_kind_of Array
+      xdoc.terms.last.should be_a_kind_of Xapian::Term
+      terms = xdoc.terms.collect { |t| t.term }
+      terms.should include "red"
+      terms.should include "green"
+      terms.should include "blue"
+      terms.should_not include "redgreenblue"
     end
 
     it "should tokenize a hash" do

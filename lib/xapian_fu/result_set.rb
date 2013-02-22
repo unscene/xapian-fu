@@ -12,13 +12,25 @@ module XapianFu
     # by :corrected_query, otherwise this is empty.
     attr_reader :corrected_query
 
+    attr_reader :facets
+
     # nodoc
     def initialize(options = { })
       @mset = options[:mset]
       @current_page = options[:current_page]
       @per_page = options[:per_page]
       @corrected_query = options[:corrected_query]
-      concat mset.matches.collect { |m| XapianDoc.new(m) }
+      @facets = {}
+      @db = options[:xapian_db]
+
+      options[:spies].each do |name, spy|
+        @facets[name] = spy.values.map do |value|
+          [@db.unserialize_value(name, value.term), value.termfreq]
+        end
+      end if options[:spies]
+
+      doc_options = {:xapian_db => options[:xapian_db] }
+      concat mset.matches.collect { |m| XapianDoc.new(m, doc_options) }
     end
 
     # The estimated total number of matches this search could return
@@ -28,7 +40,7 @@ module XapianFu
 
     # The estimated total number of pages of results this search could return
     def total_pages
-      (total_entries / per_page.to_f).round
+      (total_entries / per_page.to_f).ceil
     end
 
     # The previous page number, or nil if there are no previous pages available

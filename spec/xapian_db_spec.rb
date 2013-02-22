@@ -202,6 +202,65 @@ describe XapianDb do
       xdb.size.should == 2
     end
 
+    it "should assign extra weight according to the weights function" do
+      xdb = XapianDb.new(:weights => lambda {|k, v, f| k == :title ? 3 : 1})
+      xdb << { :text => "once upon time", :title => "A story" }
+
+      s = xdb.search("story")
+      terms = s.first.terms
+      terms.select {|t| t.term.match(/story/)}.map(&:wdf).uniq.should == [3]
+      terms.select {|t| t.term.match(/upon/)}.map(&:wdf).uniq.should == [1]
+    end
+
+    it "should use a weight of 1 if no weights function is provided" do
+      xdb = XapianDb.new
+      xdb << { :text => "once upon time", :title => "A story" }
+
+      s = xdb.search("story")
+      terms = s.first.terms
+      terms.map(&:wdf).uniq.should == [1]
+    end
+
+    it "should generate boolean terms for multiple values" do
+      xdb = XapianDb.new(:dir => tmp_dir, :create => true,
+                         :fields => {
+                           :name => { :index => true },
+                           :colors => { :boolean => true }
+                         }
+                        )
+
+      xdb << {:name => "Foo", :colors => [:red, :black]}
+      xdb << {:name => "Foo", :colors => [:red, :green]}
+      xdb << {:name => "Foo", :colors => [:blue, :yellow]}
+
+      xdb.flush
+
+      xdb.search("foo", :filter => {:colors => [:red]}).map(&:id).should == [1, 2]
+      xdb.search("foo", :filter => {:colors => [:black, :green]}).map(&:id).should == [1, 2]
+
+      xdb.search("red").should be_empty
+    end
+
+    it "should index boolean terms if asked to" do
+      xdb = XapianDb.new(:dir => tmp_dir, :create => true,
+                         :fields => {
+                           :name   => { :index => true },
+                           :colors => { :index => true, :boolean => true }
+                         }
+                        )
+
+      xdb << {:name => "Foo", :colors => [:red, :black]}
+      xdb << {:name => "Foo", :colors => [:red, :green]}
+      xdb << {:name => "Foo", :colors => [:blue, :yellow]}
+
+      xdb.flush
+
+      xdb.search("foo", :filter => {:colors => [:red]}).map(&:id).should == [1, 2]
+      xdb.search("foo", :filter => {:colors => [:black, :green]}).map(&:id).should == [1, 2]
+
+      xdb.search("red").map(&:id).should == [1, 2]
+    end
+
   end
 
   describe "search" do
@@ -364,6 +423,8 @@ describe XapianDb do
       results.previous_page.should == 1
       results.next_page.should == nil
       results.offset.should == 16
+      results = xdb.search(content, :page => 1, :per_page => 14)
+      results.total_pages.should == 3
     end
 
     it "should do searches with and without field names" do
@@ -393,6 +454,85 @@ describe XapianDb do
 
       xdb.search("jon").should be_empty
       xdb.search("jon", :synonyms => true).should_not be_empty
+    end
+
+    describe "with special queries" do
+      before do
+        @xdb = XapianDb.new
+        @xdb << "Doc 1"
+        @xdb << "Doc 2"
+      end
+
+      it "should return empty array on :nothing" do
+        @xdb.search(:nothing).should be_empty
+      end
+
+      it "should return all documents on :all" do
+        @xdb.search(:all).length.should eq 2
+      end
+    end
+
+    it "should allow to search by boolean terms" do
+      xdb = XapianDb.new(:dir => tmp_dir, :create => true,
+                         :fields => {
+                           :name => { :index => true },
+                           :age => { :boolean => true },
+                           :city => { :boolean => true }
+                         }
+                        )
+
+      xdb << {:name => "John A", :age => 10, :city => "London"}
+      xdb << {:name => "John B", :age => 11, :city => "Liverpool"}
+      xdb << {:name => "John C", :age => 12, :city => "Liverpool"}
+
+      xdb.flush
+
+      xdb.search("john").size.should == 3
+      xdb.search("john", :filter => {:age => 10}).map(&:id).should == [1]
+      xdb.search("john", :filter => {:age => [10, 12]}).map(&:id).should == [1, 3]
+
+      xdb.search("john", :filter => {:age => 10, :city => "Liverpool"}).map(&:id).should == []
+      xdb.search("john", :filter => {:city => "Liverpool"}).map(&:id).should == [2, 3]
+      xdb.search("john", :filter => {:age => 11..15, :city => "Liverpool"}).map(&:id).should == [2, 3]
+
+      xdb.search("liverpool").should be_empty
+      xdb.search("city:liverpool").map(&:id).should == [2, 3]
+    end
+  end
+
+  describe "filtering" do
+    before do
+      @xdb = XapianDb.new(
+        :dir => tmp_dir, :create => true, :overwrite => true,
+        :fields => {
+          :name      => { :index => true },
+          :age       => { :type => Integer, :sortable => true },
+          :height    => { :type => Float, :sortable => true }
+        }
+      )
+    end
+
+    it "should filter results using value ranges" do
+      @xdb << {:name => "John",   :age => 30, :height => 1.8}
+      @xdb << {:name => "John",   :age => 35, :height => 1.9}
+      @xdb << {:name => "John",   :age => 40, :height => 1.7}
+      @xdb << {:name => "Markus", :age => 35, :height => 1.7}
+      @xdb.flush
+
+      # Make sure we're combining queries using OP_FILTER by comparing
+      # the weights with and without filtering.
+      @xdb.search("markus")[0].weight.should == @xdb.search("markus", :filter => {:age => "35"})[0].weight
+
+      @xdb.search("john", :filter => {:age => "10..20"}).should be_empty
+
+      @xdb.search("john", :filter => {:age => "10..30"}).map(&:id).should == [1]
+      @xdb.search("john", :filter => {:age => "35.."}).map(&:id).should == [2, 3]
+      @xdb.search("john", :filter => {:age => "..35"}).map(&:id).should == [1, 2]
+      @xdb.search("john", :filter => {:age => ["..30", "40.."]}).map(&:id).should == [1, 3]
+
+      @xdb.search("john", :filter => {:age => "10..30", :height => "1.8"}).map(&:id).should == [1]
+      @xdb.search("john", :filter => {:age => "10..30", :height => "..1.8"}).map(&:id).should == [1]
+      @xdb.search("john", :filter => {:age => "10..30", :height => "1.9.."}).should be_empty
     end
   end
 
@@ -442,6 +582,45 @@ describe XapianDb do
       xdb << XapianDoc.new(:age => "32", :author => "Jim Jones")
       doc = xdb.documents.find(1)
       doc.values.fetch(:age).should == "32"
+    end
+
+    it "should allow range searches on sortable values with prefixes" do
+      xdb = XapianDb.new(:fields => { :price => { :type => Integer, :sortable => true, :range_prefix => "$" } })
+
+      xdb << XapianDoc.new(:price => 10)
+      xdb << XapianDoc.new(:price => 20)
+      xdb << XapianDoc.new(:price => 15)
+
+      docs = xdb.search("$10..15")
+
+      docs.map { |d| d.id }.should == [1, 3]
+    end
+
+    it "should allow range searches on sortable values with postfixes" do
+      xdb = XapianDb.new(:fields => { :age => { :type => Integer, :sortable => true, :range_postfix => "y" } })
+
+      xdb << XapianDoc.new(:age => 32)
+      xdb << XapianDoc.new(:age => 40)
+      xdb << XapianDoc.new(:age => 35)
+
+      docs = xdb.search("32..35y")
+
+      docs.map { |d| d.id }.should == [1, 3]
+    end
+
+    it "should allow range queries without prefixes" do
+      xdb = XapianDb.new(:fields => {
+        :price => { :type => Integer, :sortable => true, :range_prefix => "$" },
+        :age => { :type => Integer, :sortable => true }
+      })
+
+      xdb << XapianDoc.new(:price => 10, :age => 40)
+      xdb << XapianDoc.new(:price => 20, :age => 35)
+      xdb << XapianDoc.new(:price => 45, :age => 30)
+
+      docs = xdb.search("$20..40 OR age:40..50")
+
+      docs.map { |d| d.id }.should == [1, 2]
     end
 
     it "should store values declared as to be collapsible" do
@@ -581,5 +760,59 @@ describe XapianDb do
     end
   end
 
-end
+  describe "weights per field" do
+    it "should honor the :weight option when declaring fields" do
+      xdb = XapianDb.new(
+        :fields => {
+          :title       => {:weight => 20},
+          :abstract    => {:weight => 10},
+          :description => {:type => String}
+        }
+      )
 
+      xdb << {:id => 1, :title => "Programming Ruby: The Pragmatic Programmer's Guide", :abstract => "The programming language", :description => "This book is a tutorial and reference for the Ruby programming language."}
+      xdb << {:id => 2, :title => "The Ruby Programming Language", :abstract => "A great book", :description => "The Matz book."}
+      xdb << {:id => 3, :title => "The Rails Way", :abstract => "A good Rails book.", :description => "You have to know the language."}
+
+      xdb.search("language").map(&:id).should == [2, 1, 3]
+    end
+  end
+
+  describe "posting sources" do
+    class BoostLatest < Xapian::PostingSource
+      attr :docid
+
+      def init(db)
+        @db = db
+        @iter = db.postlist("").map(&:docid).each
+        @docid = @iter.next
+      end
+
+      def weight
+        @docid * 10
+      end
+
+      def next(minweight)
+        @docid = @iter.next
+      rescue StopIteration
+        @docid = nil
+      end
+
+      def at_end
+        @docid.nil?
+      end
+    end
+
+    it "allows to pass a custom posting source to boost results" do
+      xdb = XapianDb.new
+
+      xdb << {:id => 1, :name => "Foo"}
+      xdb << {:id => 2, :name => "Foo Bar"}
+      xdb << {:id => 3, :name => "Foo Bar Baz"}
+
+      xdb.search("foo").map(&:id).should == [1, 2, 3]
+
+      xdb.search("foo", :posting_source => BoostLatest.new).map(&:id).should == [3, 2, 1]
+    end
+  end
+end

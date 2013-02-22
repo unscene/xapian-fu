@@ -12,8 +12,14 @@ describe XapianDocValueAccessor do
     end
   end
 
+  before do
+    @xdb = XapianDb.new(:fields => {:name => {:index => true}, :city => {:store => true}})
+    @xdb << {:name => "John"}
+    @xdb.flush
+  end
+
   it "should store and fetch values like a hash" do
-    values = XapianDocValueAccessor.new(XapianDoc.new(nil))
+    values = @xdb.documents.find(1).values
     values.store(:city, "Leeds").should == "Leeds"
     values.fetch(:city).should == "Leeds"
     values[:city] = "London"
@@ -21,7 +27,7 @@ describe XapianDocValueAccessor do
   end
 
   it "should add and retrieve values from the Xapian::Document" do
-    doc = XapianDoc.new(nil)
+    doc = @xdb.documents.find(1)
     values = XapianDocValueAccessor.new(doc)
     lambda { values[:city] = "London" }.should change(doc.xapian_document, :values_count).by(1)
   end
@@ -72,7 +78,7 @@ describe XapianDocValueAccessor do
     time = Time.now
     doc = xdb.documents.new(:created_at => time)
     doc.values.store(:created_at, time).should == time
-    doc.values.fetch(:created_at).should be_close(time, 0.0001) # ignore milliseconds
+    doc.values.fetch(:created_at).should be_within(0.0001).of(time) # ignore milliseconds
     doc.to_xapian_document.values.first.value.should == [time.utc.to_f].pack("G")
   end
 
@@ -81,7 +87,7 @@ describe XapianDocValueAccessor do
     datetime = DateTime.now
     doc = xdb.documents.new(:created_at => datetime)
     doc.values.store(:created_at, datetime).should == datetime
-    doc.values.fetch(:created_at).should be_close(datetime, 0.0001) # miliseconds are not stored
+    doc.values.fetch(:created_at).should be_within(0.0001).of(datetime) # miliseconds are not stored
     doc.to_xapian_document.values.first.value.should == datetime.to_s
   end
 
@@ -111,12 +117,13 @@ describe XapianDocValueAccessor do
   end
 
   it "should count the stored values when size is called" do
-    doc = XapianDoc.new(nil)
+    doc = @xdb.documents.find(1)
     lambda { doc.values[:city] = "London" }.should change(doc.values, :size).by(1)
   end
 
   it "should delete values from the Xapian::Document" do
-    doc = XapianDoc.new(nil)
+    doc = @xdb.documents.find(1)
+    values = doc.values
     doc.values[:city] = "Leeds"
     lambda { doc.values.delete(:city) }.should change(doc.values, :size).by(-1)
     doc.values[:city] = "London"
@@ -139,6 +146,8 @@ describe XapianDocValueAccessor do
           doc.values[field].should === FILM_DATA[i][field]
         end
       end
+
+      db.search("cold mountain")[0].values[:revenue].should == 173_013_509
     end
   end
 

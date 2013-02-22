@@ -98,9 +98,29 @@ module XapianFu #:nodoc:
   # and sort them efficiently (without having to resort to storing
   # leading zeros or anything like that).
   #
+  # == Term Weights
+  #
+  # The <tt>:weights</tt> option accepts a Proc or Lambda that sets
+  # custom {term weights}[http://trac.xapian.org/wiki/FAQ/ExtraWeight].
+  #
+  # Your function will receive the term key and value and the full list of
+  # fields, and should return an integer weight to be applied for that term
+  # when the document is indexed.
+  #
+  # In this example,
+  #
+  #   XapianDb.new(:weights => Proc.new do |key, value, fields|
+  #     return 10 if fields.keys.include?('culturally_important')
+  #     return 3  if key == 'title'
+  #     1
+  #   end)
+  #
+  # terms in the title will be weighted three times greater than other terms,
+  # and all terms in 'culturally important' items will weighted 10 times more.
+  #
   class XapianDb # :nonew:
     # Path to the on-disk database. Nil if in-memory database
-    attr_reader :dir 
+    attr_reader :dir
     attr_reader :db_flag #:nodoc:
     # An array of the fields that will be stored in the Xapian
     attr_reader :store_values
@@ -112,8 +132,13 @@ module XapianFu #:nodoc:
     attr_reader :fields
     # An array of fields that will not be indexed
     attr_reader :unindexed_fields
+    # An array of fields that will be treated as boolean terms
+    attr_reader :boolean_fields
     # Whether this db will generate a spelling dictionary during indexing
     attr_reader :spelling
+    attr_reader :sortable_fields
+    attr_accessor :weights_function
+    attr :field_weights
 
     def initialize( options = { } )
       @options = { :index_positions => true, :spelling => true }.merge(options)
@@ -129,9 +154,10 @@ module XapianFu #:nodoc:
       setup_fields(@options[:fields])
       @store_values << @options[:store]
       @store_values << @options[:sortable]
-      @store_values << @options[:collapsible]      
+      @store_values << @options[:collapsible]
       @store_values = @store_values.flatten.uniq.compact
       @spelling = @options[:spelling]
+      @weights_function = @options[:weights]
     end
 
     # Return a new stemmer object for this database
@@ -194,10 +220,10 @@ module XapianFu #:nodoc:
     #
     # The <tt>:page</tt> option sets which page of results to return.
     # Defaults to 1.
-    # 
+    #
     # The <tt>:order</tt> option specifies the stored field to order
     # the results by (instead of the default search result weight).
-    # 
+    #
     # The <tt>:reverse</tt> option reverses the order of the results,
     # so lowest search weight first (or lowest stored field value
     # first).
@@ -212,9 +238,19 @@ module XapianFu #:nodoc:
     # enabled, spelling suggestions are available using the
     # XapianFu::ResultSet <tt>corrected_query</tt> method.
     #
+    # The <tt>:check_at_least</tt> option controls how many documents
+    # will be sampled. This allows for accurate page and facet counts.
+    # Specifying the special value of <tt>:all</tt> will make Xapian
+    # sample every document in the database. Be aware that this can hurt
+    # your query performance.
+    #
+    # The first parameter can also be <tt>:all</tt> or
+    # <tt>:nothing</tt>, to match all documents or no documents
+    # respectively.
+    #
     # For additional options on how the query is parsed, see
     # XapianFu::QueryParser
-    
+
     def search(q, options = {})
       defaults = { :page => 1, :reverse => false,
         :boolean => true, :boolean_anycase => true, :wildcards => true,
@@ -225,16 +261,39 @@ module XapianFu #:nodoc:
       per_page = options[:per_page] || options[:limit] || 10
       per_page = per_page.to_i rescue 10
       offset = page * per_page
+
+      check_at_least = options.include?(:check_at_least) ? options[:check_at_least] : 0
+      check_at_least = self.size if check_at_least == :all
+
       qp = XapianFu::QueryParser.new({ :database => self }.merge(options))
-      query = qp.parse_query(q.to_s)
+      query = qp.parse_query(q.is_a?(Symbol) ? q : q.to_s)
+      query = filter_query(query, options[:filter]) if options[:filter]
       enquiry = Xapian::Enquire.new(ro)
       setup_ordering(enquiry, options[:order], options[:reverse])
       if options[:collapse]
         enquiry.collapse_key = XapianDocValueAccessor.value_key(options[:collapse])
       end
+      if options[:facets]
+        spies = options[:facets].inject({}) do |accum, name|
+          accum[name] = spy = Xapian::ValueCountMatchSpy.new(XapianDocValueAccessor.value_key(name))
+          enquiry.add_matchspy(spy)
+          accum
+        end
+      end
+
+      if options.include?(:posting_source)
+        query = Xapian::Query.new(Xapian::Query::OP_AND_MAYBE, query, Xapian::Query.new(options[:posting_source]))
+      end
+
       enquiry.query = query
-      ResultSet.new(:mset => enquiry.mset(offset, per_page), :current_page => page + 1,
-                    :per_page => per_page, :corrected_query => qp.corrected_query)
+
+      ResultSet.new(:mset => enquiry.mset(offset, per_page, check_at_least),
+                    :current_page => page + 1,
+                    :per_page => per_page,
+                    :corrected_query => qp.corrected_query,
+                    :spies => spies,
+                    :xapian_db => self
+                   )
     end
 
     # Run the given block in a XapianDB transaction.  Any changes to the
@@ -269,6 +328,22 @@ module XapianFu #:nodoc:
       raise ConcurrencyError if @tx_mutex.locked?
       rw.flush
       ro.reopen
+    end
+
+    def serialize_value(field, value, type = nil)
+      if sortable_fields.include?(field)
+        Xapian.sortable_serialise(value)
+      else
+        (type || fields[field] || Object).to_xapian_fu_storage_value(value)
+      end
+    end
+
+    def unserialize_value(field, value, type = nil)
+      if sortable_fields.include?(field)
+        Xapian.sortable_unserialise(value)
+      else
+        (type || fields[field] || Object).from_xapian_fu_storage_value(value)
+      end
     end
 
     private
@@ -315,12 +390,19 @@ module XapianFu #:nodoc:
       @fields = { }
       @unindexed_fields = []
       @store_values = []
+      @sortable_fields = {}
+      @boolean_fields = []
+      @field_weights = Hash.new(1)
       return nil if field_options.nil?
-      default_opts = { 
+      default_opts = {
         :store => true,
         :index => true,
         :type => String
       }
+      boolean_default_opts = default_opts.merge(
+        :store => false,
+        :index => false
+      )
       # Convert array argument to hash, with String as default type
       if field_options.is_a? Array
         fohash = { }
@@ -330,15 +412,63 @@ module XapianFu #:nodoc:
       field_options.each do |name,opts|
         # Handle simple setup by type only
         opts = { :type => opts } unless opts.is_a? Hash
-        opts = default_opts.merge(opts)
+        if opts[:boolean]
+          opts = boolean_default_opts.merge(opts)
+        else
+          opts = default_opts.merge(opts)
+        end
         @store_values << name if opts[:store]
+        @sortable_fields[name] = {:range_prefix => opts[:range_prefix], :range_postfix => opts[:range_postfix]} if opts[:sortable]
         @unindexed_fields << name if opts[:index] == false
+        @boolean_fields << name if opts[:boolean]
         @fields[name] = opts[:type]
+        @field_weights[name] = opts[:weight] if opts.include?(:weight)
       end
       @fields
     end
-    
+
+    def filter_query(query, filter)
+      subqueries = filter.map do |field, values|
+        values = Array(values)
+
+        if sortable_fields[field]
+          sortable_filter_query(field, values)
+        elsif boolean_fields.include?(field)
+          boolean_filter_query(field, values)
+        end
+      end
+
+      combined_subqueries = Xapian::Query.new(Xapian::Query::OP_AND, subqueries)
+
+      Xapian::Query.new(Xapian::Query::OP_FILTER, query, combined_subqueries)
+    end
+
+    def sortable_filter_query(field, values)
+      subqueries = values.map do |value|
+        from, to = value.split("..")
+        slot = XapianDocValueAccessor.value_key(field)
+
+        if from.empty?
+          Xapian::Query.new(Xapian::Query::OP_VALUE_LE, slot, Xapian.sortable_serialise(to.to_f))
+        elsif to.nil?
+          Xapian::Query.new(Xapian::Query::OP_VALUE_GE, slot, Xapian.sortable_serialise(from.to_f))
+        else
+          Xapian::Query.new(Xapian::Query::OP_VALUE_RANGE, slot, Xapian.sortable_serialise(from.to_f), Xapian.sortable_serialise(to.to_f))
+        end
+      end
+
+      Xapian::Query.new(Xapian::Query::OP_OR, subqueries)
+    end
+
+    def boolean_filter_query(field, values)
+      subqueries = values.map do |value|
+        Xapian::Query.new("X#{field.to_s.upcase}#{value.to_s.downcase}")
+      end
+
+      Xapian::Query.new(Xapian::Query::OP_OR, subqueries)
+    end
+
   end
-  
+
 end
 

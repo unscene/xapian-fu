@@ -37,6 +37,13 @@ describe QueryParser do
       terms.should_not include "john"
     end
 
+    it "should turn :all into a query with no terms" do
+      qp = QueryParser.new
+      qp.parse_query(:all).terms.should == []
+      qp.parse_query(:all).empty?.should be_false
+      qp.parse_query(:nothing).empty?.should be_true
+    end
+
   end
 
 end
