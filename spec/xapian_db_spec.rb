@@ -6,10 +6,14 @@ require 'date'
 
 # Will be deleted
 tmp_dir = '/tmp/xapian_fu_test.db'
+tmp_dirs = ['/tmp/xapian_fu_test1.db','/tmp/xapian_fu_test2.db']
 
 describe XapianDb do
   before do
     FileUtils.rm_rf tmp_dir if File.exists?(tmp_dir)
+    tmp_dirs.each do |tmp_dir|
+      FileUtils.rm_rf tmp_dir if File.exists?(tmp_dir)
+    end
   end
 
   describe "new" do
@@ -28,7 +32,6 @@ describe XapianDb do
       xdb.rw.should be_a_kind_of(Xapian::WritableDatabase)
       xdb.ro.should be_a_kind_of(Xapian::Database)
     end
-
   end
 
   it "should lazily create the on-disk database when rw is used" do
@@ -259,7 +262,7 @@ describe XapianDb do
       xdb.search("foo", :filter => {:colors => [:black, :green]}).map(&:id).should == [1, 2]
 
       xdb.search("red").map(&:id).should == [1, 2]
-    end
+    end    
 
   end
 
@@ -454,6 +457,40 @@ describe XapianDb do
 
       xdb.search("jon").should be_empty
       xdb.search("jon", :synonyms => true).should_not be_empty
+    end
+
+    it "should search multiple databases" do
+      xdb1 = XapianDb.new(:dir => tmp_dirs[0],
+        create: true, 
+        fields: {
+          type: { boolean: true }
+      })
+
+      xdb1 << {:name => "John A", :age => 10, :city => "London", type: "one"}
+      xdb1 << {:name => "John B", :age => 11, :city => "Liverpool", type: "one"}
+      xdb1 << {:name => "John C", :age => 12, :city => "Liverpool", type: "one"}
+
+      xdb1.flush
+
+      xdb2 = XapianDb.new(:dir => tmp_dirs[1], 
+        :create => true,
+        fields: {
+          type: { boolean: true }
+      })
+
+      xdb2 << {:name => "John A", :age => 10, :city => "London", type: "two"}
+      xdb2 << {:name => "John B", :age => 11, :city => "Liverpool", type: "two"}
+      xdb2 << {:name => "John C", :age => 12, :city => "Liverpool", type: "two"}
+
+      xdb2.flush
+
+      xdb = XapianDb.new(:dirs => tmp_dirs, fields: {
+          type: { boolean: true }
+      })
+
+      xdb.search("john", :filter => { type: "one" }).size.should == 3
+      xdb.search("john", :filter => { type: "two" }).size.should == 3
+      xdb.search("john").size.should == 6
     end
 
     describe "with special queries" do

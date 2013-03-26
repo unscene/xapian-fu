@@ -122,6 +122,7 @@ module XapianFu #:nodoc:
   class XapianDb # :nonew:
     # Path to the on-disk database. Nil if in-memory database
     attr_reader :dir
+    attr_reader :dirs
     attr_reader :db_flag #:nodoc:
     # An array of the fields that will be stored in the Xapian
     attr_reader :store_values
@@ -144,6 +145,7 @@ module XapianFu #:nodoc:
     def initialize( options = { } )
       @options = { :index_positions => true, :spelling => true }.merge(options)
       @dir = @options[:dir]
+      @dirs = @options[:dirs]
       @index_positions = @options[:index_positions]
       @db_flag = Xapian::DB_OPEN
       @db_flag = Xapian::DB_CREATE_OR_OPEN if @options[:create]
@@ -278,7 +280,6 @@ module XapianFu #:nodoc:
         spies = options[:facets].inject({}) do |accum, name|
           value_accesor = XapianDocValueAccessor.value_key(name)
           field = @fields[name.to_sym]
-          puts field
           accum[name] = spy = XapianFu::ArrayCountMatchSpy.new(value_accesor) if field and field == Array            
           accum[name] ||= spy ||= Xapian::ValueCountMatchSpy.new(value_accesor)
           enquiry.add_matchspy(spy)
@@ -356,7 +357,7 @@ module XapianFu #:nodoc:
 
     # Setup the writable database
     def setup_rw_db
-      if dir
+      if dir      
         @rw = Xapian::WritableDatabase.new(dir, db_flag)
         @rw.flush if @options[:create]
         @rw
@@ -369,7 +370,13 @@ module XapianFu #:nodoc:
 
     # Setup the read-only database
     def setup_ro_db
-      if dir
+      if dirs 
+        @ro = Xapian::Database.new
+        dirs.each do |dir| 
+          @ro.add_database(Xapian::Database.new(dir))
+        end     
+        @ro
+      elsif dir
         @ro = Xapian::Database.new(dir)
       else
         # In memory db
